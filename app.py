@@ -156,34 +156,158 @@ elif opcion == "🔒 Panel Administrador":
     st.title("⚙️ Panel de Administración")
     
     admin_password = st.sidebar.text_input("Contraseña Admin", type="password")
-    
-    # Puedes modificar esta clave de acceso según tus necesidades
     CLAVE_ADMIN_CORRECTA = "admin123"
 
     if admin_password == CLAVE_ADMIN_CORRECTA:
         st.success("Acceso autorizado.")
 
-        # Construir reporte completo cruzando DataFrames
+        # Construir reporte completo cruzando DataFrames de forma segura
         if not df_participantes.empty and not df_equipos.empty and not df_competencias.empty:
-            df_merged = df_participantes.merge(
-                df_equipos, left_on="equipo_id", right_on="id", suffixes=("_part", "_eq")
-            ).merge(
-                df_competencias, left_on="competencia_id", right_on="id", suffixes=("_eq", "_comp")
-            )
+            # 1. Copias con columnas renombradas para evitar conflictos en el merge
+            p = df_participantes.rename(columns={
+                "id": "ID_Participante", 
+                "nombre": "Nombre_Participante"
+            })
+            e = df_equipos.rename(columns={
+                "id": "Equipo_ID", 
+                "nombre": "Nombre_Equipo"
+            })
+            c = df_competencias.rename(columns={
+                "id": "Competencia_ID", 
+                "nombre": "Nombre_Competencia"
+            })
 
-            df_reporte = df_merged[[
-                "id_part", "nombre_part", "edad", "whatsapp", "carrera", "nombre_comp", "nombre_eq"
+            # 2. Cruce seguro de tablas
+            merged = p.merge(e, left_on="equipo_id", right_on="Equipo_ID", how="left")
+            merged = merged.merge(c, left_on="competencia_id", right_on="Competencia_ID", how="left")
+
+            # 3. Selección y formateo final
+            df_reporte = merged[[
+                "ID_Participante", "Nombre_Participante", "edad", "whatsapp", "carrera", "Nombre_Competencia", "Nombre_Equipo"
             ]].rename(columns={
-                "id_part": "ID",
-                "nombre_part": "Nombre",
+                "ID_Participante": "ID",
+                "Nombre_Participante": "Nombre",
                 "edad": "Edad",
                 "whatsapp": "WhatsApp",
                 "carrera": "Carrera",
-                "nombre_comp": "Competencia",
-                "nombre_eq": "Equipo"
+                "Nombre_Competencia": "Competencia",
+                "Nombre_Equipo": "Equipo"
             }).sort_values(by="ID", ascending=False)
         else:
             df_reporte = pd.DataFrame()
+
+        # -------------------------------------------------------------
+        # 1. EXPORTAR DATOS A EXCEL
+        # -------------------------------------------------------------
+        st.subheader("📥 Exportar Reporte de Inscritos")
+        
+        if not df_reporte.empty:
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                df_reporte.to_excel(writer, index=False, sheet_name="Participantes")
+            excel_data = output.getvalue()
+
+            st.download_button(
+                label="📥 Descargar Reporte en Excel (.xlsx)",
+                data=excel_data,
+                file_name="Reporte_Participantes.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else:
+            st.info("No hay registros de participantes disponibles para exportar.")
+
+        st.divider()
+
+        # -------------------------------------------------------------
+        # 2. CREAR / EDITAR / ELIMINAR COMPETENCIAS
+        # -------------------------------------------------------------
+        st.subheader("🏆 Gestión de Competencias")
+        
+        tab_crear, tab_editar = st.tabs(["➕ Crear Competencia", "✏️ Editar / Eliminar Competencia"])
+
+        with tab_crear:
+            with st.form("form_nueva_comp", clear_on_submit=True):
+                nombre_comp = st.text_input("Nombre de la Competencia")
+                max_cupos_comp = st.number_input("Límite de Cupos Máximo", min_value=1, value=3, step=1)
+                btn_crear = st.form_submit_button("Guardar Competencia")
+
+                if btn_crear:
+                    if nombre_comp.strip():
+                        if not df_competencias.empty and nombre_comp.strip().lower() in df_competencias["nombre"].str.lower().values:
+                            st.error("Error: Ya existe una competencia con ese nombre.")
+                        else:
+                            nuevo_comp_id = 1 if df_competencias.empty else int(df_competencias["id"].max()) + 1
+                            nueva_row = {
+                                "id": nuevo_comp_id,
+                                "nombre": nombre_comp.strip(),
+                                "max_cupos": int(max_cupos_comp)
+                            }
+                            df_competencias = pd.concat([df_competencias, pd.DataFrame([nueva_row])], ignore_index=True)
+                            guardar_hoja(df_competencias, "competencias")
+                            st.success(f"Competencia '{nombre_comp}' creada exitosamente.")
+                            st.rerun()
+                    else:
+                        st.error("Ingresa un nombre válido.")
+
+        with tab_editar:
+            if not df_competencias.empty:
+                comp_dict = {f"{r['nombre']} (Cupos: {r['max_cupos']})": r['id'] for _, r in df_competencias.iterrows()}
+                comp_sel_label = st.selectbox("Selecciona Competencia a Gestionar", list(comp_dict.keys()))
+                comp_sel_id = comp_dict[comp_sel_label]
+
+                comp_actual = df_competencias[df_competencias['id'] == comp_sel_id].iloc[0]
+
+                nuevo_nombre = st.text_input("Nuevo Nombre", value=comp_actual['nombre'])
+                nuevo_cupo = st.number_input("Nuevo Límite de Cupos", min_value=1, value=int(comp_actual['max_cupos']))
+
+                col_act, col_elim = st.columns(2)
+                with col_act:
+                    if st.button("Actualizar Competencia"):
+                        df_competencias.loc[df_competencias['id'] == comp_sel_id, 'nombre'] = nuevo_nombre.strip()
+                        df_competencias.loc[df_competencias['id'] == comp_sel_id, 'max_cupos'] = int(nuevo_cupo)
+                        guardar_hoja(df_competencias, "competencias")
+                        st.success("Competencia actualizada.")
+                        st.rerun()
+
+                with col_elim:
+                    if st.button("🗑️ Eliminar Competencia", type="primary"):
+                        df_competencias = df_competencias[df_competencias['id'] != comp_sel_id]
+                        guardar_hoja(df_competencias, "competencias")
+                        st.warning("Competencia eliminada correctamente.")
+                        st.rerun()
+            else:
+                st.info("No hay competencias creadas.")
+
+        st.divider()
+
+        # -------------------------------------------------------------
+        # 3. GESTIÓN Y ELIMINACIÓN DE PARTICIPANTES
+        # -------------------------------------------------------------
+        st.subheader("📋 Lista de Participantes Registrados")
+        
+        if not df_reporte.empty:
+            st.dataframe(df_reporte, use_container_width=True)
+
+            st.write("### ❌ Eliminar Inscripción con Error")
+            
+            participantes_dict = {
+                f"ID {r['ID']}: {r['Nombre']} ({r['Competencia']} - {r['Equipo']})": r['ID']
+                for _, r in df_reporte.iterrows()
+            }
+            
+            p_seleccionado_label = st.selectbox("Selecciona el participante que deseas eliminar:", list(participantes_dict.keys()))
+            p_id_eliminar = participantes_dict[p_seleccionado_label]
+
+            if st.button("🗑️ Eliminar Inscripción Seleccionada"):
+                df_participantes = df_participantes[df_participantes['id'] != p_id_eliminar]
+                guardar_hoja(df_participantes, "participantes")
+                st.success("La inscripción ha sido eliminada de Google Sheets. El cupo se ha liberado automáticamente.")
+                st.rerun()
+        else:
+            st.info("No hay participantes registrados aún.")
+
+    elif admin_password != "":
+        st.error("🔒 Contraseña incorrecta.")
 
         # -------------------------------------------------------------
         # 1. EXPORTAR DATOS A EXCEL
