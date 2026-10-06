@@ -7,7 +7,7 @@ import pandas as pd
 # CONFIGURACIÓN DE LA PÁGINA
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Sistema de Inscripción a Competencias",
+    page_title="Sistema de Inscripción Jueces",
     page_icon="🏆",
     layout="centered"
 )
@@ -72,7 +72,7 @@ opcion = st.sidebar.radio("Selecciona una sección:", ["📝 Formulario de Inscr
 # SECCIÓN 1: FORMULARIO DE INSCRIPCIÓN DE PARTICIPANTES
 # -----------------------------------------------------------------------------
 if opcion == "📝 Formulario de Inscripción":
-    st.title("🏆 Inscripción a Competencias")
+    st.title("🏆 Inscripción Actividad/Jueces")
     st.write("Por favor, completa tus datos para inscribirte.")
 
     conn = get_db_connection()
@@ -100,7 +100,7 @@ if opcion == "📝 Formulario de Inscripción":
             opciones_disponibles[texto_label] = row['id']
 
     if not opciones_disponibles:
-        st.warning("⚠️ No hay competencias con cupos disponibles por el momento.")
+        st.warning("⚠️ No hay Actividad/Jueces con cupos disponibles por el momento.")
     else:
         with st.form("form_inscripcion", clear_on_submit=True):
             nombre = st.text_input("Nombre Completo *", placeholder="Ej. Juan Pérez")
@@ -108,7 +108,7 @@ if opcion == "📝 Formulario de Inscripción":
             whatsapp = st.text_input("WhatsApp / Teléfono *", placeholder="Ej. +5215512345678")
             carrera = st.text_input("Nombre de la Carrera *", placeholder="Ej. Ingeniería en Sistemas")
             
-            comp_seleccionada_label = st.selectbox("Selecciona Competencia *", list(opciones_disponibles.keys()))
+            comp_seleccionada_label = st.selectbox("Selecciona Actividad/Jueces *", list(opciones_disponibles.keys()))
             
             submitted = st.form_submit_button("Completar Registro")
 
@@ -225,11 +225,11 @@ elif opcion == "🔒 Panel Administrador":
             GROUP BY c.id
         ''', conn)
 
-        tab_crear, tab_editar = st.tabs(["➕ Crear Competencia", "✏️ Editar / Eliminar Competencia"])
+        tab_crear, tab_editar = st.tabs(["➕ Crear Actividad/Jueces", "✏️ Editar / Eliminar Actividad/Jueces"])
 
         with tab_crear:
             with st.form("form_nueva_comp", clear_on_submit=True):
-                nombre_comp = st.text_input("Nombre de la Competencia")
+                nombre_comp = st.text_input("Nombre de la Actividad/Jueces")
                 max_cupos_comp = st.number_input("Límite de Cupos Máximo", min_value=1, value=3, step=1)
                 btn_crear = st.form_submit_button("Guardar Competencia")
 
@@ -250,7 +250,7 @@ elif opcion == "🔒 Panel Administrador":
         with tab_editar:
             if not competencias_lista.empty:
                 comp_dict = {f"{r['nombre']} (Inscritos: {r['total_inscritos']}/{r['max_cupos']})": r['id'] for _, r in competencias_lista.iterrows()}
-                comp_sel_label = st.selectbox("Selecciona Competencia a Gestionar", list(comp_dict.keys()))
+                comp_sel_label = st.selectbox("Selecciona Actividad/Jueces", list(comp_dict.keys()))
                 comp_sel_id = comp_dict[comp_sel_label]
 
                 comp_actual = competencias_lista[competencias_lista['id'] == comp_sel_id].iloc[0]
@@ -269,11 +269,11 @@ elif opcion == "🔒 Panel Administrador":
                         st.rerun()
 
                 with col_elim:
-                    if st.button("🗑️ Eliminar Competencia", type="primary"):
+                    if st.button("🗑️ Eliminar Actividad/Jueces", type="primary"):
                         c = conn.cursor()
                         c.execute("DELETE FROM competencias WHERE id = ?", (comp_sel_id,))
                         conn.commit()
-                        st.warning("Competencia eliminada correctamente.")
+                        st.warning("Actividad/Jueces eliminada correctamente.")
                         st.rerun()
             else:
                 st.info("No hay competencias creadas.")
