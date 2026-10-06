@@ -1,66 +1,52 @@
-import sqlite3
-import io
 import streamlit as st
 import pandas as pd
+from streamlit_gsheets import GSheetsConnection
+import io
 
 # -----------------------------------------------------------------------------
 # CONFIGURACIÓN DE LA PÁGINA
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Sistema de Inscripción Jueces",
+    page_title="Sistema de Inscripción a Competencias",
     page_icon="🏆",
     layout="centered"
 )
 
 # -----------------------------------------------------------------------------
-# CONEXIÓN Y CREACIÓN DE LA BASE DE DATOS (SQLite)
+# CONEXIÓN CON GOOGLE SHEETS
 # -----------------------------------------------------------------------------
-def get_db_connection():
-    conn = sqlite3.connect('competencias_app.db', check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-def init_db():
-    conn = get_db_connection()
-    c = conn.cursor()
-    
-    # Tabla de Competencias
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS competencias (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nombre TEXT UNIQUE NOT NULL,
-            max_cupos INTEGER NOT NULL DEFAULT 3
-        )
-    ''')
-    
-    # Tabla de Equipos
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS equipos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            competencia_id INTEGER NOT NULL,
-            nombre TEXT NOT NULL,
-            FOREIGN KEY (competencia_id) REFERENCES competencias (id) ON DELETE CASCADE
-        )
-    ''')
-    
-    # Tabla de Participantes
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS participantes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nombre TEXT NOT NULL,
-            edad INTEGER NOT NULL,
-            whatsapp TEXT NOT NULL,
-            carrera TEXT NOT NULL,
-            equipo_id INTEGER NOT NULL,
-            FOREIGN KEY (equipo_id) REFERENCES equipos (id) ON DELETE CASCADE
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+def cargar_hoja(worksheet_name):
+    """Carga los datos de una pestaña específica de Google Sheets."""
+    try:
+        df = conn.read(worksheet=worksheet_name, ttl=0)
+        # Limpiar filas completamente vacías
+        return df.dropna(how="all")
+    except Exception:
+        return pd.DataFrame()
 
-# Inicializar tablas al cargar
-init_db()
+def guardar_hoja(df, worksheet_name):
+    """Guarda un DataFrame actualizado en Google Sheets."""
+    conn.update(worksheet=worksheet_name, data=df)
+
+# Cargar los DataFrames al iniciar
+df_competencias = cargar_hoja("competencias")
+df_equipos = cargar_hoja("equipos")
+df_participantes = cargar_hoja("participantes")
+
+# Asegurar tipos de datos adecuados
+if not df_competencias.empty:
+    df_competencias["id"] = df_competencias["id"].astype(int)
+    df_competencias["max_cupos"] = df_competencias["max_cupos"].astype(int)
+
+if not df_equipos.empty:
+    df_equipos["id"] = df_equipos["id"].astype(int)
+    df_equipos["competencia_id"] = df_equipos["competencia_id"].astype(int)
+
+if not df_participantes.empty:
+    df_participantes["id"] = df_participantes["id"].astype(int)
+    df_participantes["equipo_id"] = df_participantes["equipo_id"].astype(int)
 
 # -----------------------------------------------------------------------------
 # MENÚ NAVEGACIÓN LATERAL
@@ -72,87 +58,96 @@ opcion = st.sidebar.radio("Selecciona una sección:", ["📝 Formulario de Inscr
 # SECCIÓN 1: FORMULARIO DE INSCRIPCIÓN DE PARTICIPANTES
 # -----------------------------------------------------------------------------
 if opcion == "📝 Formulario de Inscripción":
-    st.title("🏆 Inscripción Actividad/Jueces")
+    st.title("🏆 Inscripción a Competencias")
     st.write("Por favor, completa tus datos para inscribirte.")
 
-    conn = get_db_connection()
-    
-    # Consulta de competencias con cálculo de inscritos
-    query_comp = '''
-        SELECT 
-            c.id, 
-            c.nombre, 
-            c.max_cupos, 
-            COUNT(p.id) AS total_inscritos
-        FROM competencias c
-        LEFT JOIN equipos e ON c.id = e.competencia_id
-        LEFT JOIN participantes p ON e.id = p.equipo_id
-        GROUP BY c.id
-    '''
-    competencias_df = pd.read_sql_query(query_comp, conn)
-
-    # Filtrar solo aquellas con cupos disponibles
-    opciones_disponibles = {}
-    for _, row in competencias_df.iterrows():
-        cupos_restantes = int(row['max_cupos']) - int(row['total_inscritos'])
-        if cupos_restantes > 0:
-            texto_label = f"{row['nombre']} ({cupos_restantes} puestos disponibles)"
-            opciones_disponibles[texto_label] = row['id']
-
-    if not opciones_disponibles:
-        st.warning("⚠️ No hay Actividad/Jueces con cupos disponibles por el momento.")
+    if df_competencias.empty:
+        st.warning("⚠️ No hay competencias registradas en el sistema por el momento.")
     else:
-        with st.form("form_inscripcion", clear_on_submit=True):
-            nombre = st.text_input("Nombre Completo *", placeholder="Ej. Juan Pérez")
-            edad = st.number_input("Edad *", min_value=12, max_value=99, value=18, step=1)
-            whatsapp = st.text_input("WhatsApp / Teléfono *", placeholder="Ej. +5215512345678")
-            carrera = st.text_input("Nombre de la Carrera *", placeholder="Ej. Ingeniería en Sistemas")
+        # Calcular cupos ocupados por competencia
+        cupos_info = []
+        for _, comp in df_competencias.iterrows():
+            c_id = comp["id"]
+            c_nombre = comp["nombre"]
+            max_c = comp["max_cupos"]
+
+            # Obtener equipos de esta competencia
+            eq_ids = df_equipos[df_equipos["competencia_id"] == c_id]["id"].tolist() if not df_equipos.empty else []
             
-            comp_seleccionada_label = st.selectbox("Selecciona Actividad/Jueces *", list(opciones_disponibles.keys()))
-            
-            submitted = st.form_submit_button("Completar Registro")
+            # Contar participantes registrados en estos equipos
+            if not df_participantes.empty and eq_ids:
+                total_inscritos = len(df_participantes[df_participantes["equipo_id"].isin(eq_ids)])
+            else:
+                total_inscritos = 0
 
-            if submitted:
-                if not nombre.strip() or not whatsapp.strip() or not carrera.strip():
-                    st.error("❌ Por favor completa todos los campos requeridos (*).")
-                else:
-                    competencia_id = opciones_disponibles[comp_seleccionada_label]
-                    c = conn.cursor()
+            cupos_restantes = max_c - total_inscritos
+            if cupos_restantes > 0:
+                texto_label = f"{c_nombre} ({cupos_restantes} puestos disponibles)"
+                cupos_info.append({"id": c_id, "nombre": c_nombre, "label": texto_label})
 
-                    # Buscar un equipo existente en la competencia con menos de 3 integrantes
-                    c.execute('''
-                        SELECT e.id, COUNT(p.id) as integrantes
-                        FROM equipos e
-                        LEFT JOIN participantes p ON e.id = p.equipo_id
-                        WHERE e.competencia_id = ?
-                        GROUP BY e.id
-                        HAVING integrantes < 3
-                        LIMIT 1
-                    ''', (competencia_id,))
-                    equipo_disponible = c.fetchone()
+        if not cupos_info:
+            st.warning("⚠️ Todas las competencias han agotado sus cupos disponibles.")
+        else:
+            opciones_dict = {item["label"]: item["id"] for item in cupos_info}
 
-                    if equipo_disponible:
-                        equipo_id = equipo_disponible['id']
+            with st.form("form_inscripcion", clear_on_submit=True):
+                nombre = st.text_input("Nombre Completo *", placeholder="Ej. Juan Pérez")
+                edad = st.number_input("Edad *", min_value=12, max_value=99, value=18, step=1)
+                whatsapp = st.text_input("WhatsApp / Teléfono *", placeholder="Ej. +5215512345678")
+                carrera = st.text_input("Nombre de la Carrera *", placeholder="Ej. Ingeniería en Sistemas")
+                
+                comp_seleccionada_label = st.selectbox("Selecciona Competencia *", list(opciones_dict.keys()))
+                submitted = st.form_submit_button("Completar Registro")
+
+                if submitted:
+                    if not nombre.strip() or not whatsapp.strip() or not carrera.strip():
+                        st.error("❌ Por favor completa todos los campos requeridos (*).")
                     else:
-                        # Si no hay equipo con espacio, crear uno nuevo
-                        c.execute("SELECT COUNT(*) FROM equipos WHERE competencia_id = ?", (competencia_id,))
-                        num_nuevo_equipo = c.fetchone()[0] + 1
-                        c.execute("INSERT INTO equipos (competencia_id, nombre) VALUES (?, ?)", 
-                                  (competencia_id, f"Equipo {num_nuevo_equipo}"))
-                        conn.commit()
-                        equipo_id = c.lastrowid
+                        competencia_id = opciones_dict[comp_seleccionada_label]
 
-                    # Registrar al participante en el equipo asignado
-                    c.execute('''
-                        INSERT INTO participantes (nombre, edad, whatsapp, carrera, equipo_id)
-                        VALUES (?, ?, ?, ?, ?)
-                    ''', (nombre.strip(), edad, whatsapp.strip(), carrera.strip(), equipo_id))
-                    conn.commit()
+                        # --- LÓGICA DE ASIGNACIÓN / CREACIÓN DE EQUIPOS ---
+                        # 1. Obtener los equipos existentes para esta competencia
+                        eq_comp = df_equipos[df_equipos["competencia_id"] == competencia_id] if not df_equipos.empty else pd.DataFrame()
+                        
+                        equipo_destino_id = None
 
-                    st.success(f"✅ ¡Inscripción realizada con éxito, {nombre}!")
-                    st.rerun()
-    
-    conn.close()
+                        if not eq_comp.empty and not df_participantes.empty:
+                            for _, eq in eq_comp.iterrows():
+                                e_id = eq["id"]
+                                cant_integrantes = len(df_participantes[df_participantes["equipo_id"] == e_id])
+                                if cant_integrantes < 3:
+                                    equipo_destino_id = e_id
+                                    break
+
+                        # 2. Si no hay equipo con espacio, crear uno nuevo
+                        if equipo_destino_id is None:
+                            nuevo_eq_id = 1 if df_equipos.empty else int(df_equipos["id"].max()) + 1
+                            num_equipo = len(eq_comp) + 1
+                            nuevo_equipo = {
+                                "id": nuevo_eq_id,
+                                "competencia_id": competencia_id,
+                                "nombre": f"Equipo {num_equipo}"
+                            }
+                            df_equipos = pd.concat([df_equipos, pd.DataFrame([nuevo_equipo])], ignore_index=True)
+                            guardar_hoja(df_equipos, "equipos")
+                            equipo_destino_id = nuevo_eq_id
+
+                        # 3. Registrar participante
+                        nuevo_part_id = 1 if df_participantes.empty else int(df_participantes["id"].max()) + 1
+                        nuevo_participante = {
+                            "id": nuevo_part_id,
+                            "nombre": nombre.strip(),
+                            "edad": int(edad),
+                            "whatsapp": whatsapp.strip(),
+                            "carrera": carrera.strip(),
+                            "equipo_id": equipo_destino_id
+                        }
+                        
+                        df_participantes = pd.concat([df_participantes, pd.DataFrame([nuevo_participante])], ignore_index=True)
+                        guardar_hoja(df_participantes, "participantes")
+
+                        st.success(f"✅ ¡Inscripción realizada con éxito, {nombre}!")
+                        st.rerun()
 
 # -----------------------------------------------------------------------------
 # SECCIÓN 2: PANEL ADMINISTRADOR
@@ -160,40 +155,45 @@ if opcion == "📝 Formulario de Inscripción":
 elif opcion == "🔒 Panel Administrador":
     st.title("⚙️ Panel de Administración")
     
-    # Control de acceso con clave
     admin_password = st.sidebar.text_input("Contraseña Admin", type="password")
     
-    # Define la contraseña de administración deseada aquí
+    # Puedes modificar esta clave de acceso según tus necesidades
     CLAVE_ADMIN_CORRECTA = "admin123"
 
     if admin_password == CLAVE_ADMIN_CORRECTA:
         st.success("Acceso autorizado.")
-        conn = get_db_connection()
+
+        # Construir reporte completo cruzando DataFrames
+        if not df_participantes.empty and not df_equipos.empty and not df_competencias.empty:
+            df_merged = df_participantes.merge(
+                df_equipos, left_on="equipo_id", right_on="id", suffixes=("_part", "_eq")
+            ).merge(
+                df_competencias, left_on="competencia_id", right_on="id", suffixes=("_eq", "_comp")
+            )
+
+            df_reporte = df_merged[[
+                "id_part", "nombre_part", "edad", "whatsapp", "carrera", "nombre_comp", "nombre_eq"
+            ]].rename(columns={
+                "id_part": "ID",
+                "nombre_part": "Nombre",
+                "edad": "Edad",
+                "whatsapp": "WhatsApp",
+                "carrera": "Carrera",
+                "nombre_comp": "Competencia",
+                "nombre_eq": "Equipo"
+            }).sort_values(by="ID", ascending=False)
+        else:
+            df_reporte = pd.DataFrame()
 
         # -------------------------------------------------------------
         # 1. EXPORTAR DATOS A EXCEL
         # -------------------------------------------------------------
         st.subheader("📥 Exportar Reporte de Inscritos")
-        query_reporte = '''
-            SELECT 
-                p.id AS ID_Participante, 
-                p.nombre AS Nombre, 
-                p.edad AS Edad, 
-                p.whatsapp AS WhatsApp, 
-                p.carrera AS Carrera, 
-                c.nombre AS Competencia, 
-                e.nombre AS Equipo
-            FROM participantes p
-            JOIN equipos e ON p.equipo_id = e.id
-            JOIN competencias c ON e.competencia_id = c.id
-            ORDER BY p.id DESC
-        '''
-        df_reporte = pd.read_sql_query(query_reporte, conn)
-
+        
         if not df_reporte.empty:
             output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_reporte.to_excel(writer, index=False, sheet_name='Participantes')
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                df_reporte.to_excel(writer, index=False, sheet_name="Participantes")
             excel_data = output.getvalue()
 
             st.download_button(
@@ -208,52 +208,43 @@ elif opcion == "🔒 Panel Administrador":
         st.divider()
 
         # -------------------------------------------------------------
-        # 2. CREAR / EDITAR COMPETENCIAS
+        # 2. CREAR / EDITAR / ELIMINAR COMPETENCIAS
         # -------------------------------------------------------------
         st.subheader("🏆 Gestión de Competencias")
         
-        # Consultar competencias existentes
-        competencias_lista = pd.read_sql_query('''
-            SELECT 
-                c.id, 
-                c.nombre, 
-                c.max_cupos, 
-                COUNT(p.id) as total_inscritos
-            FROM competencias c
-            LEFT JOIN equipos e ON c.id = e.competencia_id
-            LEFT JOIN participantes p ON e.id = p.equipo_id
-            GROUP BY c.id
-        ''', conn)
-
-        tab_crear, tab_editar = st.tabs(["➕ Crear Actividad/Jueces", "✏️ Editar / Eliminar Actividad/Jueces"])
+        tab_crear, tab_editar = st.tabs(["➕ Crear Competencia", "✏️ Editar / Eliminar Competencia"])
 
         with tab_crear:
             with st.form("form_nueva_comp", clear_on_submit=True):
-                nombre_comp = st.text_input("Nombre de la Actividad/Jueces")
+                nombre_comp = st.text_input("Nombre de la Competencia")
                 max_cupos_comp = st.number_input("Límite de Cupos Máximo", min_value=1, value=3, step=1)
                 btn_crear = st.form_submit_button("Guardar Competencia")
 
                 if btn_crear:
                     if nombre_comp.strip():
-                        try:
-                            c = conn.cursor()
-                            c.execute("INSERT INTO competencias (nombre, max_cupos) VALUES (?, ?)", 
-                                      (nombre_comp.strip(), max_cupos_comp))
-                            conn.commit()
+                        if not df_competencias.empty and nombre_comp.strip().lower() in df_competencias["nombre"].str.lower().values:
+                            st.error("Error: Ya existe una competencia con ese nombre.")
+                        else:
+                            nuevo_comp_id = 1 if df_competencias.empty else int(df_competencias["id"].max()) + 1
+                            nueva_row = {
+                                "id": nuevo_comp_id,
+                                "nombre": nombre_comp.strip(),
+                                "max_cupos": int(max_cupos_comp)
+                            }
+                            df_competencias = pd.concat([df_competencias, pd.DataFrame([nueva_row])], ignore_index=True)
+                            guardar_hoja(df_competencias, "competencias")
                             st.success(f"Competencia '{nombre_comp}' creada exitosamente.")
                             st.rerun()
-                        except sqlite3.IntegrityError:
-                            st.error("Error: Ya existe una competencia con ese nombre.")
                     else:
                         st.error("Ingresa un nombre válido.")
 
         with tab_editar:
-            if not competencias_lista.empty:
-                comp_dict = {f"{r['nombre']} (Inscritos: {r['total_inscritos']}/{r['max_cupos']})": r['id'] for _, r in competencias_lista.iterrows()}
-                comp_sel_label = st.selectbox("Selecciona Actividad/Jueces", list(comp_dict.keys()))
+            if not df_competencias.empty:
+                comp_dict = {f"{r['nombre']} (Cupos: {r['max_cupos']})": r['id'] for _, r in df_competencias.iterrows()}
+                comp_sel_label = st.selectbox("Selecciona Competencia a Gestionar", list(comp_dict.keys()))
                 comp_sel_id = comp_dict[comp_sel_label]
 
-                comp_actual = competencias_lista[competencias_lista['id'] == comp_sel_id].iloc[0]
+                comp_actual = df_competencias[df_competencias['id'] == comp_sel_id].iloc[0]
 
                 nuevo_nombre = st.text_input("Nuevo Nombre", value=comp_actual['nombre'])
                 nuevo_cupo = st.number_input("Nuevo Límite de Cupos", min_value=1, value=int(comp_actual['max_cupos']))
@@ -261,19 +252,17 @@ elif opcion == "🔒 Panel Administrador":
                 col_act, col_elim = st.columns(2)
                 with col_act:
                     if st.button("Actualizar Competencia"):
-                        c = conn.cursor()
-                        c.execute("UPDATE competencias SET nombre = ?, max_cupos = ? WHERE id = ?", 
-                                  (nuevo_nombre.strip(), nuevo_cupo, comp_sel_id))
-                        conn.commit()
+                        df_competencias.loc[df_competencias['id'] == comp_sel_id, 'nombre'] = nuevo_nombre.strip()
+                        df_competencias.loc[df_competencias['id'] == comp_sel_id, 'max_cupos'] = int(nuevo_cupo)
+                        guardar_hoja(df_competencias, "competencias")
                         st.success("Competencia actualizada.")
                         st.rerun()
 
                 with col_elim:
-                    if st.button("🗑️ Eliminar Actividad/Jueces", type="primary"):
-                        c = conn.cursor()
-                        c.execute("DELETE FROM competencias WHERE id = ?", (comp_sel_id,))
-                        conn.commit()
-                        st.warning("Actividad/Jueces eliminada correctamente.")
+                    if st.button("🗑️ Eliminar Competencia", type="primary"):
+                        df_competencias = df_competencias[df_competencias['id'] != comp_sel_id]
+                        guardar_hoja(df_competencias, "competencias")
+                        st.warning("Competencia eliminada correctamente.")
                         st.rerun()
             else:
                 st.info("No hay competencias creadas.")
@@ -290,9 +279,8 @@ elif opcion == "🔒 Panel Administrador":
 
             st.write("### ❌ Eliminar Inscripción con Error")
             
-            # Mapeo para seleccionar participante a eliminar
             participantes_dict = {
-                f"ID {r['ID_Participante']}: {r['Nombre']} ({r['Competencia']} - {r['Equipo']})": r['ID_Participante']
+                f"ID {r['ID']}: {r['Nombre']} ({r['Competencia']} - {r['Equipo']})": r['ID']
                 for _, r in df_reporte.iterrows()
             }
             
@@ -300,15 +288,12 @@ elif opcion == "🔒 Panel Administrador":
             p_id_eliminar = participantes_dict[p_seleccionado_label]
 
             if st.button("🗑️ Eliminar Inscripción Seleccionada"):
-                c = conn.cursor()
-                c.execute("DELETE FROM participantes WHERE id = ?", (p_id_eliminar,))
-                conn.commit()
-                st.success("La inscripción ha sido eliminada. El cupo ha sido liberado automáticamente.")
+                df_participantes = df_participantes[df_participantes['id'] != p_id_eliminar]
+                guardar_hoja(df_participantes, "participantes")
+                st.success("La inscripción ha sido eliminada de Google Sheets. El cupo se ha liberado automáticamente.")
                 st.rerun()
         else:
             st.info("No hay participantes registrados aún.")
-
-        conn.close()
 
     elif admin_password != "":
         st.error("🔒 Contraseña incorrecta.")
